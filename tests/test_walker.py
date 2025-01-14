@@ -1,6 +1,10 @@
 #!/usr/bin/env python3 -m pytest
-from plextraktsync.plex_api import PlexApi, PlexLibrarySection
-from plextraktsync.walker import WalkConfig, WalkPlanner
+from __future__ import annotations
+
+from plextraktsync.plan.WalkConfig import WalkConfig
+from plextraktsync.plan.WalkPlanner import WalkPlanner
+from plextraktsync.plex.PlexApi import PlexApi
+from plextraktsync.plex.PlexLibrarySection import PlexLibrarySection
 
 
 class PlexLibrarySectionMock(PlexLibrarySection):
@@ -37,14 +41,24 @@ class PlexMock(PlexApi):
 
 
 def test_walker():
-    plex = PlexMock([
-        {"type": "movie", "title": "Movies", "items": [
-            {"title": "Batman Begins"},
-        ]},
-        {"type": "show", "title": "TV Shows", "items": [
-            {"title": "Breaking Bad"},
-        ]},
-    ])
+    plex = PlexMock(
+        [
+            {
+                "type": "movie",
+                "title": "Movies",
+                "items": [
+                    {"title": "Batman Begins"},
+                ],
+            },
+            {
+                "type": "show",
+                "title": "TV Shows",
+                "items": [
+                    {"title": "Breaking Bad"},
+                ],
+            },
+        ]
+    )
 
     wc = WalkConfig()
     wc.add_library("Movies")

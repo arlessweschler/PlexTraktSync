@@ -1,14 +1,34 @@
-from contextlib import contextmanager
-from time import time
+from __future__ import annotations
 
-from plextraktsync.logging import logger, logging
+import inspect
+from contextlib import contextmanager
+from datetime import timedelta
+from time import monotonic
+
+from humanize.time import precisedelta
+
+from plextraktsync.factory import logging
+
+default_logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def measure_time(message, level=logging.INFO):
-    start = time()
+def measure_time(message, *args, level=logging.INFO, logger=None, **kwargs):
+    start = monotonic()
     yield
-    timedelta = time() - start
+    delta = monotonic() - start
 
-    m, s = divmod(timedelta, 60)
-    logger.log(level, message + " in " + (m > 0) * "{:.0f} min ".format(m) + (s > 0) * "{:.1f} seconds".format(s))
+    if inspect.ismethod(logger):
+        log = logger
+    else:
+
+        def log(*a, **kw):
+            (logger or default_logger).log(level, *a, **kw)
+
+    minimum_unit = "microseconds" if delta < 1 else "seconds"
+    log(
+        f"{message} in %s",
+        precisedelta(timedelta(seconds=delta), minimum_unit=minimum_unit),
+        *args,
+        **kwargs,
+    )

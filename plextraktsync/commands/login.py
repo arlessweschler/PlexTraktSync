@@ -1,26 +1,26 @@
-import click
+from __future__ import annotations
 
-from plextraktsync.commands.plex_login import (has_plex_token,
-                                               plex_login_autoconfig)
-from plextraktsync.commands.trakt_login import (has_trakt_token,
-                                                trakt_login_autoconfig)
-from plextraktsync.style import comment, highlight, success
+from plextraktsync.commands.plex_login import plex_login_autoconfig
+from plextraktsync.commands.trakt_login import has_trakt_token, trakt_login_autoconfig
+from plextraktsync.factory import factory
+from plextraktsync.style import highlight, success
 
 
 def ensure_login():
-    if not has_plex_token():
+    if not factory.has_plex_token:
         plex_login_autoconfig()
 
     if not has_trakt_token():
         trakt_login_autoconfig()
 
 
-@click.command()
 def login():
-    """
-    Log in to Plex and Trakt if needed
-    """
+    print = factory.print
 
-    click.echo(highlight("Checking Plex and Trakt logins"))
+    print(highlight("Checking Plex and Trakt login credentials existence"))
+    print("")
+    print("It will not test if the credentials are valid, only that they are present.")
+    print('If you need to re-login use "plex-login" or "trakt-login" commands respectively.')
+    print("")
     ensure_login()
-    click.echo(success("Success!"))
+    print(success("Done!"))

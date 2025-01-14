@@ -32,7 +32,7 @@ under the same [MIT License] that covers the project.
 
 Feel free to contact the maintainers if that's a concern.
 
-[MIT License]: http://choosealicense.com/licenses/mit/
+[MIT License]: https://choosealicense.com/licenses/mit/
 
 ## Report bugs using GitHub's [issues]
 
@@ -43,9 +43,12 @@ We use GitHub issues to track public bugs. Report a bug by [opening a new issue]
 
 ## Checking out code
 
-If you checkout a specific version, this can be done in one of two ways:
+If you checkout a specific version, this can be done in one of different ways:
+
 - [GitHub download](#github-download)
 - [Git clone](#git-clone)
+- [Install code from Pull request](#install-code-from-pull-request)
+- [Build Docker image](#building-docker-image)
 
 Note: Development should be done against the `main` branch and not a specific tag.
 
@@ -79,21 +82,24 @@ Proceed to [Install dependencies](#install-dependencies)
 This applies to [GitHub download](#github-download) and [Git clone](#git-clone).
 
 In the `PlexTraktSync` directory, install the required Python packages:
+
 ```
 python3 -m pip install -r requirements.txt
 ```
 
 To run from `PlexTraktSync` directory:
+
 ```
 python3 -m plextraktsync
 ```
 
 Or use a wrapper which is able to change directory accordingly:
+
 ```
 /path/to/PlexTraktSync/plextraktsync.sh
 ```
 
-*or* alternatively you can use [pipenv]:
+_or_ alternatively you can use [pipenv]:
 
 ```
 python3 -m pip install pipenv
@@ -103,11 +109,115 @@ pipenv run plextraktsync
 
 [pipenv]: https://pipenv.pypa.io/
 
+### Install code from Pull request
+
+This requires prior installation with `pipx`.
+Replace `838` with a pull request you intend to install.
+
+```
+plextraktsync self-update --pr 838
+```
+
+It will create new binary `plextraktsync@838` for that pull request. You need to run this binary instead of `plextraktsync`.
+
+To pull new changes for the same pull request:
+
+```
+plextraktsync@838 self-update
+```
+
+If you need to do the same in docker container, you should:
+
+͏ ͏ ͏1. first prepare the container with:
+
+```
+$ docker-compose run --rm --entrypoint sh plextraktsync
+/app # pip install pipx
+/app # pipx install plextraktsync
+/app # apk add git
+/app # plextraktsync self-update --pr 969
+/app # plextraktsync@969 info
+```
+
+͏͏͏͏ ͏ ͏2. then run the script with:
+
+```
+/app # plextraktsync@969 sync
+```
+
+Alternatively you can [build image](#building-docker-image) yourself.
+
+To remove the versions:
+
+```
+$ pipx list
+venvs are in /Users/glen/.local/pipx/venvs
+apps are exposed on your $PATH at /Users/glen/.local/bin
+   package plextraktsync 0.20.9, installed using Python 3.10.5
+    - plextraktsync
+   package PlexTraktSync 0.20.0.dev0 (PlexTraktSync@838), installed using Python 3.10.5
+    - plextraktsync@838
+   package PlexTraktSync 0.20.0.dev0 (PlexTraktSync@984), installed using Python 3.10.5
+    - plextraktsync@984
+
+$ pipx uninstall plextraktsync@838
+uninstalled PlexTraktSync@838! ✨ 🌟 ✨
+$ pipx uninstall plextraktsync@984
+uninstalled PlexTraktSync@984! ✨ 🌟 ✨
+$
+```
+
+## Building docker image
+
+You can build docker image from default branch:
+
+```sh
+docker build https://github.com/Taxel/PlexTraktSync.git#HEAD -t plextraktsync
+```
+
+To build for a pull request:
+
+```sh
+docker build https://github.com/Taxel/PlexTraktSync.git#refs/pull/1281/head -t plextraktsync/1281
+```
+
+To build from pull request in docker-compose:
+
+```yml
+services:
+  plextraktsync:
+    build: https://github.com/Taxel/PlexTraktSync.git#refs/pull/1892/head
+```
+
+## Git: setup pre-commit
+
+For convenience this project uses [pre-commit] hooks:
+
+```
+brew install pre-commit
+pre-commit install
+```
+
+It's usually a good idea to run the hooks against all of the files when adding
+new hooks (usually pre-commit will only run on the changed files during git
+hooks):
+
+```
+pre-commit run --all-files
+```
+
+You can update your hooks to the latest version automatically by running
+`pre-commit autoupdate`. By default, this will bring the hooks to the latest
+tag on the default branch.
+
+[pre-commit]: https://pre-commit.com/
+
 ## Testing
 
 We use [pytest] for testing.
 
 First, ensure you have dependencies installed:
+
 ```
 pip3 install -r tests/requirements.txt
 ```
@@ -126,6 +236,30 @@ python3 -m pytest tests/test_version.py
 
 [pytest]: https://pytest.org/
 
+## Trakt API
+
+You can use such shell script helper to make requests to [trakt api].
+The `.pytrakt.json` file can be found from PlexTraktSync Config dir (`plextraktsync info`).
+
+[trakt api]: https://trakt.docs.apiary.io/
+
+```sh
+#!/bin/sh
+: ${TRAKT_API_KEY=$(jq -r .CLIENT_ID < .pytrakt.json)}
+: ${TRAKT_AUTHORIZATION=Bearer $(jq -r .OAUTH_TOKEN < .pytrakt.json)}
+
+curl -sSf \
+     --header "Content-Type: application/json" \
+     --header "trakt-api-version: 2" \
+     --header "trakt-api-key: $TRAKT_API_KEY" \
+     --header "Authorization: $TRAKT_AUTHORIZATION" \
+	 "$@"
+```
+
+```
+$ ./trakt-api.sh "https://api.trakt.tv/users/me" | jq -C | less
+```
+
 ## Sharing Plex Media Server Database
 
 Sometimes it is useful to share your copy of your Plex Media Server database
@@ -138,6 +272,7 @@ send your database only to people you trust. Plex removes password hashes from
 the download, so passwords are not exposed, not even in hashed form.
 
 To download and send the database:
+
 1. Visit [`Plex Web`] -> `Manage Server` -> `Settings` -> `Troubleshooting` -> `Download database`.
    This is typically `https://app.plex.tv/desktop/#!/settings/server/<your_server_id>/manage/help`
 1. To find developer email, take any commit made by them, add `.patch` to the url.
@@ -153,7 +288,7 @@ your library.
 
 The XML can be viewed from Plex Media Servers that you own:
 
-  - Overflow menu → Get Info → View XML in bottom-left corner of the modal
+- Overflow menu → Get Info → View XML in bottom-left corner of the modal
 
 ![][xml-menu]
 

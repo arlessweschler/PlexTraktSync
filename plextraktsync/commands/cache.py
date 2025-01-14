@@ -1,16 +1,18 @@
-from functools import partial
+from __future__ import annotations
 
-import click
-from requests_cache import CachedSession
+from functools import partial
+from typing import TYPE_CHECKING
 
 from plextraktsync.factory import factory
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from typing import Any
+
+    from requests_cache import CachedRequest, CachedSession
+
 
 def get_sorted_cache(session: CachedSession, sorting: str, reverse: bool):
-    get_responses = getattr(session.cache, "values", None)
-    if not callable(get_responses):
-        raise RuntimeError("This command requires requests_cache 0.7.x")
-
     sorters = {
         "size": lambda r: r.size,
         "date": lambda r: r.created_at,
@@ -18,16 +20,17 @@ def get_sorted_cache(session: CachedSession, sorting: str, reverse: bool):
     }
     sorter = partial(sorted, reverse=reverse, key=sorters[sorting])
 
-    yield from sorter(get_responses())
+    yield from sorter(session.cache.responses.values())
+
+
+def responses_by_url(session: CachedSession, url: str) -> Generator[CachedRequest, Any, None]:
+    return (response for response in session.cache.responses.values() if response.url == url)
 
 
 # https://stackoverflow.com/questions/36106712/how-can-i-limit-iterations-of-a-loop-in-python
 def limit_iterator(items, limit: int):
     if not limit or limit <= 0:
-        i = 0
-        for v in items:
-            yield i, v
-            i += 1
+        yield from enumerate(items)
 
     else:
         yield from zip(range(limit), items)
@@ -40,8 +43,9 @@ def render_xml(data):
         return None
 
     root = ElementTree.fromstring(data)
+    ElementTree.indent(root)
 
-    return ElementTree.tostring(root, encoding='utf8').decode('utf8')
+    return ElementTree.tostring(root, encoding="utf8").decode("utf8")
 
 
 def render_json(data):
@@ -51,61 +55,52 @@ def render_json(data):
     return dumps(decoded, indent=2)
 
 
+def expire_url(session: CachedSession, url: str):
+    print(f"Expiring: {url}")
+    session.cache.delete(urls=[url])
+
+
 def inspect_url(session: CachedSession, url: str):
-    matches = [
-        response
-        for response in session.cache.responses.values()
-        if response.url == url
-    ]
+    matches = responses_by_url(session, url)
     for m in matches:
-        content_type = m.headers['Content-Type']
-        if content_type.startswith('text/xml'):
-            print(f"<!-- {m.url} -->")
+        content_type = m.headers["Content-Type"]
+        if content_type.startswith("text/xml") or content_type.startswith("application/xml"):
+            print(f"<!-- {m} -->")
+            for name, value in m.headers.items():
+                print(f"<!-- {name}: {value} -->")
             print(render_xml(m.content))
-        elif content_type.startswith('application/json'):
-            print(f"// {m.url}")
+        elif content_type.startswith("application/json"):
+            print(f"// {m}")
+            for name, value in m.headers.items():
+                print(f"// {name}: {value}")
             print(render_json(m.content))
         else:
             print(f"# {content_type}: {m.url}")
+            for name, value in m.headers.items():
+                print(f"# {name}: {value}")
             print(m.content)
 
 
-@click.command()
-@click.option(
-    "--sort",
-    type=click.Choice(["size", "date", "url"], case_sensitive=False),
-    default="size",
-    show_default=True, help="Sort mode"
-)
-@click.option(
-    "--limit",
-    type=int,
-    default=20,
-    show_default=True, help="Limit entries to be printed"
-)
-@click.option(
-    "--reverse",
-    is_flag=True,
-    default=False,
-    help="Sort reverse"
-)
-@click.argument("url", required=False)
-def cache(sort: str, limit: int, reverse: bool, url: str):
-    """
-    Manage and analyze Requests Cache.
-    """
+def cache_status(cache):
+    # https://github.com/requests-cache/requests-cache/commit/35b48cf3486e546a5e4090e8e410b698e8a6b7be#r87356998
+    return f"Total rows: {len(cache.responses)} responses, {len(cache.redirects)} redirects"
 
-    config = factory.config()
-    trakt_cache = config["cache"]["path"]
-    session = CachedSession(cache_name=trakt_cache, backend='sqlite')
+
+def cache(sort: str, limit: int, reverse: bool, expire: bool, url: str):
+    session = factory.session
+    print = factory.print
+
+    if expire:
+        expire_url(session, url)
+        return
 
     if url:
         inspect_url(session, url)
         return
 
-    click.echo(f"Cache status:\n{session.cache}\n")
+    print(f"Cache status:\n{cache_status(session.cache)}\n")
 
-    click.echo("URLs:")
+    print("URLs:")
     sorted = get_sorted_cache(session, sort, reverse)
     for i, r in limit_iterator(sorted, limit):
-        click.echo(f"- {i + 1:3d}. {r}")
+        print(f"- {i + 1:3d}. {r}", crop=False, overflow="ignore")

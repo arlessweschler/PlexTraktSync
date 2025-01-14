@@ -1,86 +1,55 @@
-from typing import List
-
-import click
-from click import ClickException
-from tqdm import tqdm
+from __future__ import annotations
 
 from plextraktsync.commands.login import ensure_login
+from plextraktsync.decorators.coro import coro
 from plextraktsync.decorators.measure_time import measure_time
-from plextraktsync.factory import factory
-from plextraktsync.logging import logger
-from plextraktsync.version import version
+from plextraktsync.factory import factory, logging
+
+logger = logging.getLogger(__name__)
 
 
-@click.command()
-@click.option(
-    "--library",
-    help="Specify Library to use"
-)
-@click.option(
-    "--show", "show",
-    type=str,
-    show_default=True, help="Sync specific show only"
-)
-@click.option(
-    "--movie", "movie",
-    type=str,
-    show_default=True, help="Sync specific movie only"
-)
-@click.option(
-    "--id", "ids",
-    type=str,
-    multiple=True,
-    show_default=True, help="Sync specific item only"
-)
-@click.option(
-    "--sync", "sync_option",
-    type=click.Choice(["all", "movies", "tv", "shows"], case_sensitive=False),
-    default="all",
-    show_default=True, help="Specify what to sync"
-)
-@click.option(
-    "--batch-size", "batch_size",
-    type=int,
-    default=1, show_default=True,
-    help="Batch size for collection submit queue"
-)
-@click.option(
-    "--dry-run", "dry_run",
-    type=bool,
-    default=False,
-    is_flag=True,
-    help="Dry run: Do not make changes"
-)
-@click.option(
-    "--no-progress-bar", "no_progress_bar",
-    type=bool,
-    default=False,
-    is_flag=True,
-    help="Don't output progress bars"
-)
+@coro
+async def run_async(runner, **kwargs):
+    await runner.sync(**kwargs)
+
+
 def sync(
-        sync_option: str,
-        library: str,
-        show: str,
-        movie: str,
-        ids: List[str],
-        batch_size: int,
-        dry_run: bool,
-        no_progress_bar: bool,
+    sync_option: str,
+    library: str,
+    show: str,
+    movie: str,
+    ids: list[str],
+    server: str,
+    batch_delay: int,
+    dry_run: bool,
+    no_progress_bar: bool,
 ):
     """
     Perform sync between Plex and Trakt
     """
 
-    logger.info(f"PlexTraktSync [{version()}]")
-    ensure_login()
+    logger.info(f"PlexTraktSync [{factory.version.full_version}]")
 
     movies = sync_option in ["all", "movies"]
     shows = sync_option in ["all", "tv", "shows"]
+    watchlist = sync_option in ["all", "watchlist"]
 
-    config = factory.run_config().update(batch_size=batch_size, dry_run=dry_run, progressbar=not no_progress_bar)
-    wc = factory.walk_config().update(movies=movies, shows=shows)
-    w = factory.walker()
+    config = factory.run_config.update(
+        dry_run=dry_run,
+    )
+    if server:
+        logger.warning('"plextraktsync sync --server=<name>" is deprecated use "plextraktsync --server=<name> sync"')
+        config.update(server=server)
+    if no_progress_bar:
+        logger.warning('"plextraktsync sync --no-progress-bar" is deprecated use "plextraktsync --no-progressbar sync"')
+        config.update(progress=False)
+    if batch_delay:
+        logger.warning('"plextraktsync sync --batch-delay=<number>" is deprecated use "plextraktsync ---batch-delay=<number> sync"')
+        config.update(batch_delay=batch_delay)
+
+    ensure_login()
+    wc = factory.walk_config.update(movies=movies, shows=shows, watchlist=watchlist)
+    w = factory.walker
 
     if ids:
         for id in ids:
@@ -92,21 +61,14 @@ def sync(
     if movie:
         wc.add_movie(movie)
 
-    if not wc.is_valid():
-        click.echo("Nothing to sync, this is likely due conflicting options given.")
+    if not wc.is_valid:
+        print("Nothing to sync, this is likely due conflicting options given.")
         return
 
-    try:
-        w.print_plan(print=tqdm.write)
-    except RuntimeError as e:
-        raise ClickException(str(e))
-
-    if dry_run:
-        print("Enabled dry-run mode: not making actual changes")
-
     with measure_time("Completed full sync"):
-        try:
-            runner = factory.sync()
-            runner.sync(walker=w, dry_run=config.dry_run)
-        except RuntimeError as e:
-            raise ClickException(str(e))
+        runner = factory.sync
+        if runner.config.need_library_walk:
+            w.print_plan(print=logger.info)
+        if dry_run:
+            logger.info("Enabled dry-run mode: not making actual changes")
+        run_async(runner, walker=w, dry_run=config.dry_run)

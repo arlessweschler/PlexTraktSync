@@ -1,108 +1,115 @@
-import click
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from urllib.parse import quote_plus
+
+from humanize import naturalsize
+from plexapi.utils import millisecondToHumanstr
+from rich.markup import escape
 
 from plextraktsync.factory import factory
-from plextraktsync.version import version
+from plextraktsync.plex.PlexId import PlexId
+from plextraktsync.util.expand_id import expand_plexid
+
+if TYPE_CHECKING:
+    from plextraktsync.media.Media import Media
+    from plextraktsync.plex.PlexLibraryItem import PlexLibraryItem
 
 
-def print_watched_shows():
-    from rich.table import Table
-
-    from plextraktsync.console import console
-
-    trakt = factory.trakt_api()
-
-    table = Table(show_header=True, header_style="bold magenta", title="Watched shows on Trakt")
-    table.add_column("Id", style="dim", width=6)
-    table.add_column("Slug")
-    table.add_column("Seasons", justify="right")
-    for show_id, progress in sorted(trakt.watched_shows.shows.items()):
-        id = f"[link=https://trakt.tv/shows/{show_id}]{show_id}[/]"
-        slug = f"[link=https://trakt.tv/shows/{progress.slug}]{progress.slug}[/]"
-        table.add_row(id, slug, str(len(progress.seasons)))
-
-    console.print(table)
-
-
-def inspect_media(id):
-    plex = factory.plex_api()
-    mf = factory.media_factory()
+def inspect_media(plex_id: PlexId):
+    plex = plex_id.plex
+    mf = factory.media_factory
+    print = factory.print
 
     print("")
-    pm = plex.fetch_item(id)
+    pm: PlexLibraryItem = plex.fetch_item(plex_id)
     if not pm:
-        print(f"Inspecting {id}: Not found")
+        print(f"Inspecting {plex_id}: Not found from {plex}")
         return
 
-    print(f"Inspecting {id}: {pm}")
+    print(f"Inspecting {plex_id}: {pm}")
 
-    url = plex.media_url(pm)
-    print(f"URL: {url}")
+    print("--- Plex")
+    if pm.library:
+        print(f"Library: {pm.library.title}")
+
+    print(f"Plex Web URL: {pm.web_url}")
+    if pm.discover_url:
+        print(f"Discover URL: {pm.discover_url}")
 
     media = pm.item
-    print(f"Media.Type: {media.type}")
+    print(f"Title: {media.title}")
+    if media.type == "movie" and pm.edition_title:
+        print(f"Edition Title: {pm.edition_title}")
+    if pm.has_media:
+        print(f"Media.Duration: {pm.duration}")
+    print(f"Media.Type: '{media.type}'")
     print(f"Media.Guid: '{media.guid}'")
     if not pm.is_legacy_agent:
         print(f"Media.Guids: {media.guids}")
 
-    if media.type in ["episode", "movie"]:
+    if not pm.is_discover and media.type in ["episode", "movie"]:
         audio = pm.audio_streams[0]
         print(f"Audio: '{audio.audioChannelLayout}', '{audio.displayTitle}'")
 
         video = pm.video_streams[0]
         print(f"Video: '{video.codec}'")
 
+        print("Subtitles:")
+        for index, subtitle in enumerate(pm.subtitle_streams, start=1):
+            print(
+                f"  Subtitle {index}: ({subtitle.language}) {subtitle.title}"
+                f" (codec: {subtitle.codec}, selected: {subtitle.selected}, transient: {subtitle.transient})"
+            )
+
         print("Parts:")
+        pm.item.reload(checkFiles=True)
         for index, part in enumerate(pm.parts, start=1):
-            print(f"  Part {index}: {part.file}")
+            size = naturalsize(part.size, binary=True)
+            file_link = f"[link=file://{quote_plus(part.file)}]{escape(part.file)}[/link]"
+            print(f"  Part {index} (exists: {part.exists}): {file_link} {size}")
+
+        print("Markers:")
+        for marker in pm.markers:
+            start = millisecondToHumanstr(marker.start)
+            end = millisecondToHumanstr(marker.end)
+            print(f"  {marker.type}: {start} - {end}")
 
     print("Guids:")
     for guid in pm.guids:
-        print(f"  Guid: {guid}, Id: {guid.id}, Provider: {guid.provider}")
+        print(f"  Guid: {guid.provider_link}, Id: {guid.id}, Provider: '{guid.provider}'")
 
     print(f"Metadata: {pm.to_json()}")
+    print(f"Played on Plex: {pm.is_watched}")
 
-    m = mf.resolve_any(pm)
+    history = plex.history(media, device=True, account=True) if not pm.is_discover else []
+    print("Plex play history:")
+    for h in history:
+        d = h.device
+        # handle cases like "local" for offline plays
+        if d.name == "" and d.platform == "":
+            dn = h.device.clientIdentifier
+        else:
+            dn = f"{d.name} with {d.platform}"
+        print(f"- {h.viewedAt} {h}: by {h.account.name} on {dn}")
+
+    print("--- Trakt")
+    m: Media = mf.resolve_any(pm)
     if not m:
+        print("Trakt: No match found")
         return
-
-    # fetch show property for watched_on_trakt
-    if m.is_episode:
-        ps = plex.fetch_item(m.plex.item.grandparentRatingKey)
-        ms = mf.resolve_any(ps)
-        m.show = ms
 
     print(f"Trakt: {m.trakt_url}")
     print(f"Plex Rating: {m.plex_rating}")
     print(f"Trakt Rating: {m.trakt_rating}")
-    print(f"Watched on Plex: {m.watched_on_plex}")
-    print(f"Watched on Trakt: {m.watched_on_trakt}")
-
-    print("Plex play history:")
-    for h in m.plex_history(device=True, account=True):
-        print(f"- {h.viewedAt} by {h.account.name} on {h.device.name} with {h.device.platform}")
+    if pm.has_media:
+        print(f"Watched on Trakt: {m.watched_on_trakt}")
+        print(f"Collected on Trakt: {m.is_collected}")
 
 
-@click.command()
-@click.argument('input', nargs=-1)
-@click.option(
-    "--watched-shows",
-    type=bool,
-    default=False,
-    is_flag=True,
-    help="Print Trakt watched_shows and exit"
-)
-def inspect(input, watched_shows: bool):
-    """
-    Inspect details of an object
-    """
+def inspect(inputs: list[str]):
+    print = factory.print
+    print(f"PlexTraktSync [{factory.version.full_version}]")
 
-    print(f"PlexTraktSync [{version()}]")
-
-    if watched_shows:
-        print_watched_shows()
-        return
-
-    for id in input:
-        if id.isnumeric():
-            id = int(id)
-        inspect_media(id)
+    for plex_id in expand_plexid(inputs):
+        inspect_media(plex_id)

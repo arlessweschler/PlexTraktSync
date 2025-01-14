@@ -1,29 +1,25 @@
-import click
+from __future__ import annotations
 
-from plextraktsync.factory import factory
-from plextraktsync.logging import logger
+from plextraktsync.factory import factory, logger
 
 
-@click.command()
-@click.option('--confirm', is_flag=True, help='Confirm the dangerous action')
-@click.option('--dry-run', is_flag=True, help='Do not perform delete actions')
-def clear_collections(confirm, dry_run):
-    """
-    Clear Movies and Shows collections in Trakt
-    """
+def clear_collections(confirm: bool, dry_run: bool, collection: str):
+    print = factory.print
 
     if not confirm and not dry_run:
-        click.echo('You need to pass --confirm or --dry-run option to proceed')
+        print("You need to pass --confirm or --dry-run option to proceed")
         return
 
-    trakt = factory.trakt_api()
+    trakt = factory.trakt_api
+    movies = collection in ["all", "movies"]
+    shows = collection in ["all", "shows"]
 
-    for movie in trakt.movie_collection:
-        logger.info(f"Deleting: {movie}")
+    for movie in trakt.movie_collection if movies else []:
+        logger.info(f"Deleting from Trakt: {movie}")
         if not dry_run:
-            trakt.remove_from_library(movie)
+            trakt.remove_from_collection(movie)
 
-    for show in trakt.show_collection:
-        logger.info(f"Deleting: {show}")
+    for show in trakt.show_collection if shows else []:
+        logger.info(f"Deleting from Trakt: {show}")
         if not dry_run:
-            trakt.remove_from_library(show)
+            trakt.remove_from_collection(show)

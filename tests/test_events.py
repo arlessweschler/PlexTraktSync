@@ -1,6 +1,9 @@
 #!/usr/bin/env python3 -m pytest
-from plextraktsync.events import ActivityNotification, EventFactory
-from plextraktsync.listener import EventDispatcher
+from __future__ import annotations
+
+from plextraktsync.watch.EventDispatcher import EventDispatcher
+from plextraktsync.watch.EventFactory import EventFactory
+from plextraktsync.watch.events import ActivityNotification
 from tests.conftest import load_mock
 
 
@@ -47,12 +50,22 @@ def test_event_dispatcher():
     assert len(events) == 1, "Matched event=ended and progress=100"
 
     events = []
-    dispatcher = EventDispatcher().on(ActivityNotification, lambda x: events.append(x), event=["started"], progress=100)
+    dispatcher = EventDispatcher().on(
+        ActivityNotification,
+        lambda x: events.append(x),
+        event=["started"],
+        progress=100,
+    )
     dispatcher.event_handler(raw_events[4])
     assert len(events) == 0, "Matched event=ended and progress=100"
 
     events = []
-    dispatcher = EventDispatcher().on(ActivityNotification, lambda x: events.append(x), progress=100, event=["started"])
+    dispatcher = EventDispatcher().on(
+        ActivityNotification,
+        lambda x: events.append(x),
+        progress=100,
+        event=["started"],
+    )
     dispatcher.event_handler(raw_events[4])
     assert len(events) == 0, "Matched progress=100 and event=started"
 

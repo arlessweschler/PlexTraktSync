@@ -1,59 +1,52 @@
-import json
-import subprocess
-from json import JSONDecodeError
-from os import system
-from typing import List, Union
+from __future__ import annotations
 
-import click
+from plextraktsync.factory import factory
+from plextraktsync.util.execp import execp
 
 
-def execx(command: Union[str, List[str]]):
-    if isinstance(command, str):
-        command = command.split(' ')
+def has_previous_pr(pr: int):
+    from plextraktsync.util.packaging import pipx_installed
 
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return process.communicate()[0]
-
-
-def pipx_installed(package: str):
-    try:
-        output = execx('pipx list --json')
-    except FileNotFoundError:
-        return None
-    if not output:
-        return None
-
-    try:
-        install_data = json.loads(output)
-    except JSONDecodeError:
-        return None
-    if install_data is None:
-        return None
-
-    try:
-        package = install_data['venvs'][package]['metadata']['main_package']
-    except KeyError:
-        return None
-
-    return package
-
-
-def enable_self_update():
-    package = pipx_installed('plextraktsync')
+    package = pipx_installed(f"plextraktsync@{pr}")
 
     return package is not None
 
 
-@click.command()
-def self_update():
+def pr_number() -> int | None:
     """
-    Update PlexTraktSync to latest version using pipx
-
-    \b
-    $ plextraktsync self-update
-    Updating PlexTraktSync to latest using pipx
-    upgraded package plextraktsync from 0.15.3 to 0.18.5 (location: /Users/glen/.local/pipx/venvs/plextraktsync)
+    Check if current executable is named plextraktsync@<pr>
     """
 
-    click.echo('Updating PlexTraktSync to latest using pipx')
-    system('pipx upgrade PlexTraktSync')
+    import sys
+
+    try:
+        pr = sys.argv[0].split("@")[1]
+    except IndexError:
+        return None
+
+    if pr.isnumeric():
+        return int(pr)
+    return None
+
+
+def self_update(pr: int):
+    print = factory.print
+
+    if not pr:
+        pr = pr_number()
+        if pr:
+            print(f"Installed as pr #{pr}, enabling pr mode")
+
+    if pr:
+        if has_previous_pr(pr):
+            # Uninstall because pipx doesn't update otherwise:
+            # - https://github.com/pypa/pipx/issues/902
+            print(f"Uninstalling previous plextraktsync@{pr}")
+            execp(f"pipx uninstall plextraktsync@{pr}")
+
+        print(f"Updating PlexTraktSync to the pull request #{pr} version using pipx")
+        execp(f"pipx install --suffix=@{pr} --force git+https://github.com/Taxel/PlexTraktSync@refs/pull/{pr}/head")
+        return
+
+    print("Updating PlexTraktSync to the latest version using pipx")
+    execp("pipx upgrade PlexTraktSync")

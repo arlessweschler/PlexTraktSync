@@ -1,71 +1,33 @@
+from __future__ import annotations
+
 from trakt.core import get
-from trakt.tv import TVEpisode
-
-
-@get
-def get_liked_lists():
-    data = yield 'users/likes/lists?limit=1000'
-    retVal = []
-    for lst in data:
-        thisList = {}
-        thisList['listname'] = lst['list']['name']
-        thisList['username'] = lst['list']['user']['ids']['slug']
-        retVal.append(thisList)
-    yield retVal
-
-
-@get
-def lookup_table(show):
-    # returns all seasons and episodes with one single call
-    data = yield 'shows/{}/seasons?extended=episodes'.format(show.trakt)
-    retVal = {}
-    for season in data:
-        eps = {}
-        if 'episodes' in season.keys():
-            for episode in season['episodes']:
-                eps[episode['number']] = LazyEpisode(show, season['number'], episode['number'], episode['ids'])
-        retVal[season['number']] = eps
-    yield retVal
-
-
-class LazyEpisode():
-    def __init__(self, show, season, number, ids):
-        self.show = show
-        self.season = season
-        self.number = number
-        self.ids = ids
-        self._instance = None
-
-    @property
-    def instance(self):
-        if self._instance is None:
-            self._instance = TVEpisode(self.show.title, self.season, number=self.number, **self.ids)
-        return self._instance
+from trakt.utils import airs_date
 
 
 @get
 def allwatched():
-    # returns a ShowProgress object containing all watched episodes
-    data = yield 'sync/watched/shows'
-    yield AllWatchedShows(data)
+    # returns a AllShowProgress object containing all watched shows
+    data = yield "sync/watched/shows"
+    yield AllShowsProgress(data)
 
 
 @get
-def watched(show_id):
-    # returns a ShowProgress object containing the watched states of the passed show
-    data = yield 'shows/{}/progress/watched?specials=true'.format(show_id)
-    yield ShowProgress(**data)
+def allcollected():
+    # returns a AllShowProgress object containing all collected shows
+    data = yield "sync/collection/shows"
+    yield AllShowsProgress(data)
 
 
-@get
-def collected(show_id):
-    # returns a ShowProgress object containing the watched states of the passed show
-    data = yield 'shows/{}/progress/collection?specials=true'.format(show_id)
-    yield ShowProgress(**data)
-
-
-class EpisodeProgress():
-    def __init__(self, number=0, aired=0, plays=False, completed=False, last_watched_at=None, collected_at=None):
+class EpisodeProgress:
+    def __init__(
+        self,
+        number=0,
+        aired=0,
+        plays=False,
+        completed=False,
+        last_watched_at=None,
+        collected_at=None,
+    ):
         self.number = number
         self.aired = aired
         self.completed = completed
@@ -78,7 +40,7 @@ class EpisodeProgress():
         return self.completed
 
 
-class SeasonProgress():
+class SeasonProgress:
     def __init__(self, number=0, title=None, aired=0, completed=False, episodes=None):
         self.number = number
         self.aired = aired
@@ -89,16 +51,33 @@ class SeasonProgress():
 
         self.completed = completed == len(episodes)
 
-    def get_completed(self, episode):
+    def get_completed(self, episode, reset_at):
         if self.completed:
             return True
-        elif episode not in self.episodes.keys():
+        elif episode not in self.episodes:
+            return False
+        last_watched_at = airs_date(self.episodes[episode].last_watched_at)
+        if reset_at and reset_at > last_watched_at:
             return False
         return self.episodes[episode].get_completed()
 
 
-class ShowProgress():
-    def __init__(self, aired=0, plays=None, completed=False, last_watched_at=None, last_updated_at=None, reset_at=None, show=None, seasons=None, hidden_seasons=None, next_episode=0, last_episode=0, last_collected_at=None):
+class ShowProgress:
+    def __init__(
+        self,
+        aired=0,
+        plays=None,
+        completed=False,
+        last_watched_at=None,
+        last_updated_at=None,
+        reset_at=None,
+        show=None,
+        seasons=None,
+        hidden_seasons=None,
+        next_episode=0,
+        last_episode=0,
+        last_collected_at=None,
+    ):
         self.aired = aired
         self.last_watched_at = last_watched_at
         self.last_updated_at = last_updated_at
@@ -107,8 +86,8 @@ class ShowProgress():
         self.hidden_seasons = hidden_seasons
         self.next_episode = next_episode
         self.last_episode = last_episode
-        self.trakt = show['ids']['trakt'] if show else None
-        self.slug = show['ids']['slug'] if show else None
+        self.trakt = show["ids"]["trakt"] if show else None
+        self.slug = show["ids"]["slug"] if show else None
         self.seasons = {}
         allCompleted = True
         for season in seasons:
@@ -121,12 +100,13 @@ class ShowProgress():
     def get_completed(self, season, episode):
         if self.completed:
             return True
-        elif season not in self.seasons.keys():
+        elif season not in self.seasons:
             return False
-        return self.seasons[season].get_completed(episode)
+        reset_at = airs_date(self.reset_at)
+        return self.seasons[season].get_completed(episode, reset_at)
 
 
-class AllWatchedShows():
+class AllShowsProgress:
     def __init__(self, shows=None):
         self.shows = {}
         for show in shows:
@@ -134,15 +114,25 @@ class AllWatchedShows():
             self.shows[prog.trakt] = prog
 
     def get_completed(self, trakt_id, season, episode):
-        if trakt_id not in self.shows.keys():
+        if trakt_id not in self.shows:
             return False
-        elif season not in self.shows[trakt_id].seasons.keys():
+        else:
+            return self.shows[trakt_id].get_completed(season, episode)
+
+    def is_collected(self, trakt_id, season, episode):
+        if trakt_id not in self.shows or season not in self.shows[trakt_id].seasons:
             return False
-        return self.shows[trakt_id].seasons[season].get_completed(episode)
+        return episode in self.shows[trakt_id].seasons[season].episodes
+
+    def reset_at(self, trakt_id):
+        if trakt_id not in self.shows:
+            return None
+        else:
+            return airs_date(self.shows[trakt_id].reset_at)
 
     def add(self, trakt_id, season, episode):
-        episode_prog = {"number":episode, "completed":True}
-        season_prog = {"number":season, "episodes":[episode_prog]}
+        episode_prog = {"number": episode, "completed": True}
+        season_prog = {"number": season, "episodes": [episode_prog]}
         if trakt_id in self.shows:
             if season in self.shows[trakt_id].seasons:
                 self.shows[trakt_id].seasons[season].episodes[episode] = EpisodeProgress(**episode_prog)
@@ -150,7 +140,3 @@ class AllWatchedShows():
                 self.shows[trakt_id].seasons[season] = SeasonProgress(**season_prog)
         else:
             self.shows[trakt_id] = ShowProgress(seasons=[season_prog])
-
-
-if __name__ == "__main__":
-    print(get_liked_lists())

@@ -1,17 +1,18 @@
-from functools import wraps
+from __future__ import annotations
+
+from decorator import decorator
 
 
-def flatten_list(method):
-    @wraps(method)
-    def inner(*args, **kwargs):
-        return list(method(*args, **kwargs))
-
-    return inner
+@decorator
+def flatten_list(method, *args, **kwargs):
+    return list(method(*args, **kwargs))
 
 
-def flatten_dict(method):
-    @wraps(method)
-    def inner(*args, **kwargs):
-        return dict(method(*args, **kwargs))
+@decorator
+def flatten_dict(method, *args, **kwargs):
+    return dict(method(*args, **kwargs))
 
-    return inner
+
+@decorator
+def flatten_set(method, *args, **kwargs):
+    return set(method(*args, **kwargs))

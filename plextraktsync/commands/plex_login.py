@@ -1,55 +1,95 @@
-import socket
-from datetime import datetime, timedelta
+from __future__ import annotations
+
 from functools import partial
 from os import environ
-from subprocess import check_output
-from typing import List
+from typing import TYPE_CHECKING
 
-import click
-from click import Choice, ClickException
-from plexapi.exceptions import NotFound, Unauthorized
-from plexapi.myplex import MyPlexAccount, MyPlexResource, ResourceConnection
+from click import ClickException
+from InquirerPy import get_style, inquirer
+from InquirerPy.base import Choice
+from InquirerPy.separator import Separator
+from plexapi.exceptions import BadRequest, NotFound, Unauthorized
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
 
+from plextraktsync.decorators.flatten import flatten_list
 from plextraktsync.factory import factory
-from plextraktsync.style import (comment, disabled, error, highlight, prompt,
-                                 success, title)
+from plextraktsync.style import error, prompt, success, title
+from plextraktsync.util.local_url import local_url
+
+if TYPE_CHECKING:
+    from plexapi.myplex import MyPlexResource, ResourceConnection
 
 PROMPT_PLEX_PASSWORD = prompt("Please enter your Plex password")
 PROMPT_PLEX_USERNAME = prompt("Please enter your Plex username or e-mail")
+PROMPT_PLEX_CODE = prompt("Enter a 2FA code if enabled, or leave blank otherwise")
 PROMPT_PLEX_RELOGIN = prompt("You already have Plex Access Token, do you want to log in again?")
-SUCCESS_MESSAGE = success("Plex Media Server Authentication Token and base URL have been added to .env file")
-NOTICE_2FA_PASSWORD = comment(
-    "If you have 2 Factor Authentication enabled on Plex "
-    "you can append the code to your password below (eg. passwordCODE)"
+SUCCESS_MESSAGE = success("Plex Media Server Authentication Token and base URL have been added to servers.yml")
+CONFIG = factory.config
+
+style = get_style(
+    {
+        "questionmark": "hidden",
+        "question": "ansiyellow",
+        "pointer": "fg:ansiblack bg:ansiyellow",
+    }
 )
-CONFIG = factory.config()
 
-from InquirerPy import get_style, inquirer
-
-style = get_style({"questionmark": "hidden", "question": "ansiyellow", "pointer": "fg:ansiblack bg:ansiyellow", })
+print = factory.print
 
 
-def myplex_login(username, password):
+@flatten_list
+def server_urls(server: MyPlexResource):
+    """
+    Return urls to connect to specific server
+    """
+
+    # https://github.com/pkkid/python-plexapi/blob/3d3f9da5012428f5d703cf9f8e95f6aa10673ea6/plexapi/myplex.py#L1309-L1314
+    connections = server.preferred_connections(
+        None,
+        locations=server.DEFAULT_LOCATION_ORDER,
+        schemes=server.DEFAULT_SCHEME_ORDER,
+    )
+    yield from connections
+    yield local_url()
+
+
+def myplex_login(username: str, password: str, token=None, code=None):
     while True:
-        username = click.prompt(PROMPT_PLEX_USERNAME, type=str, default=username)
-        click.echo(NOTICE_2FA_PASSWORD)
-        password = click.prompt(PROMPT_PLEX_PASSWORD, type=str, default=password, hide_input=True, show_default=False)
+        if token:
+            print("Using existing token to login to Plex")
+        if not token:
+            username = Prompt.ask(PROMPT_PLEX_USERNAME, default=username)
+            password = Prompt.ask(PROMPT_PLEX_PASSWORD, password=True, default=password, show_default=False)
+            code = Prompt.ask(PROMPT_PLEX_CODE)
         try:
-            return MyPlexAccount(username, password)
+            return MyPlexAccount(username=username, password=password, code=code, token=token)
         except Unauthorized as e:
-            click.echo(error(f"Log in to Plex failed: {e}, Try again."))
+            if token:
+                raise e
+            print(error(f"Log in to Plex failed: '{e}', Try again."), highlight=False)
+        except BadRequest as e:
+            raise ClickException(f"Log in to Plex failed: {e}")
 
 
 def choose_managed_user(account: MyPlexAccount):
-    users = [u.title for u in account.users()]
+    users = [u.title for u in account.users() if u.home]
     if not users:
         return None
 
-    click.echo(success("Managed user(s) found:"))
+    print(success("Managed user(s) found:"))
     users = sorted(users)
     users.insert(0, account.username)
-    user = inquirer.select(message="Select the user you would like to use:", choices=users, default=None, style=style, qmark="", pointer=">",).execute()
+    user = inquirer.select(
+        message="Select the user you would like to use:",
+        choices=users,
+        default=None,
+        style=style,
+        qmark="",
+        pointer=">",
+    ).execute()
 
     if user == account.username:
         return None
@@ -62,41 +102,44 @@ def choose_managed_user(account: MyPlexAccount):
     return None
 
 
-def prompt_server(servers: List[MyPlexResource]):
-    old_age = datetime.now() - timedelta(weeks=1)
+def format_server(s):
+    lines = []
+    product = f"{s.product}/{s.productVersion}"
+    platform = f"{s.device}: {s.platform}/{s.platformVersion}"
+    lines.append(f"{s.name}: Last seen: {str(s.lastSeenAt)}, Server: {product} on {platform}")
+    c: ResourceConnection
+    for c in s.connections:
+        lines.append(f"    {c.uri}")
 
-    def fmt_server(s):
-        if s.lastSeenAt < old_age:
-            decorator = disabled
-        else:
-            decorator = comment
+    return Choice(value=s.name, name="\n    ".join(lines))
 
-        product = decorator(f"{s.product}/{s.productVersion}")
-        platform = decorator(f"{s.device}: {s.platform}/{s.platformVersion}")
-        click.echo(f"- {highlight(s.name)}: [Last seen: {decorator(str(s.lastSeenAt))}, Server: {product} on {platform}]")
-        c: ResourceConnection
-        for c in s.connections:
-            click.echo(f"    {c.uri}")
 
+def prompt_server(servers: list[MyPlexResource]):
     owned_servers = [s for s in servers if s.owned]
     unowned_servers = [s for s in servers if not s.owned]
-    sorter = partial(sorted, key=lambda s: s.lastSeenAt)
+    sorter = partial(sorted, key=lambda s: s.lastSeenAt, reverse=True)
 
     server_names = []
     if owned_servers:
-        click.echo(success(f"{len(owned_servers)} owned servers found:"))
+        server_names.append(Separator("Owned servers"))
         for s in sorter(owned_servers):
-            fmt_server(s)
-            server_names.append(s.name)
+            server_names.append(format_server(s))
     if unowned_servers:
-        click.echo(success(f"{len(unowned_servers)} unowned servers found:"))
+        server_names.append(Separator("Unowned servers"))
         for s in sorter(unowned_servers):
-            fmt_server(s)
-            server_names.append(s.name)
+            server_names.append(format_server(s))
 
-    return inquirer.select(message="Select default server:", choices=sorted(server_names), default=None, style=style, qmark="", pointer=">",).execute()
+    print()
+    return inquirer.select(
+        message="Select default server:",
+        choices=server_names,
+        default=None,
+        qmark="",
+        pointer=">",
+    ).execute()
 
-def pick_server(account: MyPlexAccount):
+
+def pick_server(account: MyPlexAccount) -> MyPlexResource | None:
     servers = account.resources()
     if not servers:
         return None
@@ -114,7 +157,7 @@ def pick_server(account: MyPlexAccount):
     return None
 
 
-def choose_server(account: MyPlexAccount):
+def choose_server(account: MyPlexAccount) -> tuple[MyPlexResource, PlexServer]:
     while True:
         try:
             server = pick_server(account)
@@ -122,20 +165,23 @@ def choose_server(account: MyPlexAccount):
                 raise ClickException("Unable to find server from Plex account")
 
             # Connect to obtain baseUrl
-            click.echo(title(f"Attempting to connect to {server.name}. This may take time and print some errors."))
-            click.echo(title("Server connections:"))
+            print()
+            print(title(f"Attempting to connect to {server.name}. This may take time and print some errors."))
+            print(title("Server connections:"))
             for c in server.connections:
-                click.echo(f"    {c.uri}")
+                print(f"    {c.uri}")
+            print()
             plex = server.connect()
-            # Validate connection again, the way we connect
-            plex = PlexServer(token=server.accessToken, baseurl=plex._baseurl)
-            return [server, plex]
+            return server, plex
         except NotFound as e:
-            click.secho(f"{e}, Try another server, {type(e)}")
-
-
-def has_plex_token():
-    return CONFIG["PLEX_TOKEN"] is not None
+            print(
+                Panel.fit(
+                    f"{e}. Try another server",
+                    padding=1,
+                    title="[b red]ERROR",
+                    border_style="red",
+                )
+            )
 
 
 def plex_login_autoconfig():
@@ -144,50 +190,59 @@ def plex_login_autoconfig():
     login(username, password)
 
 
-@click.command("plex-login")
-@click.option("--username", help="Plex login", default=lambda: environ.get("PLEX_USERNAME", CONFIG["PLEX_USERNAME"]))
-@click.option("--password", help="Plex password", default=lambda: environ.get("PLEX_PASSWORD", None))
-def plex_login(username, password):
-    """
-    Log in to Plex Account to obtain Access Token. Optionally can use managed user on servers that you own.
-    """
+def plex_login(username, password, use_token: bool):
+    token = None
+    if use_token:
+        config = factory.config
+        token = config["PLEX_ACCOUNT_TOKEN"]
 
-    login(username, password)
+    login(username, password, token)
 
 
-def login(username: str, password: str):
-    if has_plex_token():
-        if not click.confirm(PROMPT_PLEX_RELOGIN, default=True):
+def login(username: str, password: str, token=None):
+    if factory.has_plex_token:
+        if not Confirm.ask(PROMPT_PLEX_RELOGIN, default=True):
             return
 
-    account = myplex_login(username, password)
-    click.echo(success("Login to MyPlex was successful!"))
+    account = myplex_login(username, password, token)
+    print(
+        Panel.fit(
+            "Login to MyPlex was successful",
+            title="Plex Login",
+            title_align="left",
+            padding=1,
+            border_style="bright_blue",
+        )
+    )
 
-    [server, plex] = choose_server(account)
-    click.echo(success(f"Connection to {plex.friendlyName} established successfully!"))
+    (server, plex) = choose_server(account)
+    print(success(f"Connection to {plex.friendlyName} established successfully!"))
 
     token = server.accessToken
     user = account.username
+    plex_owner_token = plex_account_token = ""
     if server.owned:
         managed_user = choose_managed_user(account)
         if managed_user:
             user = managed_user
+            plex_owner_token = token
             token = account.user(managed_user).get_token(plex.machineIdentifier)
-
-    CONFIG["PLEX_USERNAME"] = user
-    CONFIG["PLEX_TOKEN"] = token
-    CONFIG["PLEX_BASEURL"] = plex._baseurl
-    if environ.get("PTS_IN_DOCKER"):
-        try:
-            host_ip = socket.gethostbyname("host.docker.internal")
-        except socket.gaierror:
-            try:
-                host_ip = check_output("ip -4 route show default | awk '{ print $3 }'", shell=True).decode().rstrip()
-            except Exception:
-                host_ip = "172.17.0.1"
-        CONFIG["PLEX_FALLBACKURL"] = f"http://{host_ip}:32400"
     else:
-        CONFIG["PLEX_FALLBACKURL"] = "http://localhost:32400"
+        plex_account_token = account._token
+
+    sc = factory.server_config_factory
+    sc.add_server(
+        id=plex.machineIdentifier,
+        name=server.name,
+        token=token,
+        urls=server_urls(server),
+    )
+    sc.save()
+
+    CONFIG["PLEX_OWNER_TOKEN"] = plex_owner_token
+    CONFIG["PLEX_ACCOUNT_TOKEN"] = plex_account_token
+    CONFIG["PLEX_USERNAME"] = user
+    CONFIG["PLEX_SERVER"] = server.name
     CONFIG.save()
 
-    click.echo(SUCCESS_MESSAGE)
+    print(SUCCESS_MESSAGE)
